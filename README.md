@@ -19,6 +19,19 @@ python server.py
 
 Open `http://localhost:8797` in your browser. Create a route, start sending events.
 
+### Docker
+
+```bash
+docker compose up -d
+```
+
+Or build manually:
+
+```bash
+docker build -t spur .
+docker run -d -p 8797:8797 -v spur-data:/data spur
+```
+
 ## For AI Agents
 
 Give your agent the contents of [TOOL.md](TOOL.md) as context. It contains the REST API reference and tool definitions.

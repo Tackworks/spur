@@ -1,0 +1,11 @@
+services:
+  spur:
+    build: .
+    ports:
+      - "8797:8797"
+    volumes:
+      - spur-data:/data
+    restart: unless-stopped
+
+volumes:
+  spur-data:

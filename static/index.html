@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spur</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-hover: #1c2129;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --green: #3fb950;
+  --green-bg: rgba(63,185,80,0.15);
+  --red: #f85149;
+  --red-bg: rgba(248,81,73,0.15);
+  --amber: #d29922;
+  --amber-bg: rgba(210,153,34,0.15);
+  --blue: #4ea8de;
+  --blue-bg: rgba(78,168,222,0.15);
+  --purple: #a371f7;
+  --purple-bg: rgba(163,113,247,0.15);
+  --font: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); }
+
+header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+header h1 { font-size: 18px; font-weight: 600; color: var(--purple); }
+header h1 span { color: var(--text-dim); font-weight: 400; font-size: 13px; margin-left: 8px; }
+.stats { display: flex; gap: 16px; font-size: 12px; color: var(--text-dim); }
+.stats .num { color: var(--text); font-weight: 600; }
+
+.container { max-width: 1000px; margin: 0 auto; padding: 24px; }
+
+.tabs {
+  display: flex; gap: 4px; margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  padding: 8px 16px; font-size: 12px; cursor: pointer; color: var(--text-dim);
+  border: none; background: none; font-family: var(--font);
+  border-bottom: 2px solid transparent; transition: all 0.15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); border-bottom-color: var(--purple); }
+
+.section { display: none; }
+.section.active { display: block; }
+
+/* Routes */
+.route-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 10px;
+  transition: border-color 0.2s;
+}
+.route-card:hover { border-color: var(--purple); }
+.route-card.disabled { opacity: 0.5; }
+.route-header {
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;
+}
+.route-name { font-weight: 600; font-size: 14px; }
+.route-meta { font-size: 11px; color: var(--text-dim); display: flex; gap: 8px; align-items: center; }
+.route-details { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+.dest-badge {
+  font-size: 10px; padding: 2px 8px; border-radius: 4px; font-weight: 600; text-transform: uppercase;
+}
+.dest-telegram { background: var(--blue-bg); color: var(--blue); }
+.dest-slack { background: var(--purple-bg); color: var(--purple); }
+.dest-discord { background: var(--green-bg); color: var(--green); }
+.dest-http { background: var(--amber-bg); color: var(--amber); }
+
+.route-actions { display: flex; gap: 6px; margin-top: 10px; }
+.btn {
+  padding: 4px 12px; border: 1px solid var(--border); border-radius: 4px;
+  font-size: 11px; font-family: var(--font); cursor: pointer;
+  background: var(--surface); color: var(--text-dim); transition: all 0.15s;
+}
+.btn:hover { background: var(--surface-hover); color: var(--text); }
+.btn-danger { border-color: var(--red); color: var(--red); }
+.btn-danger:hover { background: var(--red-bg); }
+.btn-primary { border-color: var(--purple); color: var(--purple); }
+.btn-primary:hover { background: var(--purple-bg); }
+
+#add-route-btn {
+  background: var(--purple); color: var(--bg); border: none; padding: 6px 14px;
+  border-radius: 4px; font-family: var(--font); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+
+/* Events */
+.event-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.event-left { display: flex; gap: 10px; align-items: center; }
+.event-type { font-weight: 600; color: var(--text); }
+.event-source { color: var(--text-dim); }
+.event-right { display: flex; gap: 10px; align-items: center; font-size: 11px; color: var(--text-dim); }
+.status-delivered { color: var(--green); }
+.status-no_match { color: var(--amber); }
+.match-count { background: var(--purple-bg); color: var(--purple); padding: 1px 6px; border-radius: 3px; font-size: 10px; }
+
+.empty-state {
+  text-align: center; padding: 48px 24px; color: var(--text-dim);
+  font-size: 13px; border: 1px dashed var(--border); border-radius: 8px;
+}
+
+/* Modal */
+.modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100;
+  justify-content: center; align-items: center;
+}
+.modal-overlay.active { display: flex; }
+.modal {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 20px; width: 480px; max-height: 80vh; overflow-y: auto;
+}
+.modal h2 { font-size: 14px; margin-bottom: 16px; color: var(--purple); }
+.modal label {
+  display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 4px;
+  margin-top: 10px; text-transform: uppercase; letter-spacing: 1px;
+}
+.modal input, .modal textarea, .modal select {
+  width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  font-family: var(--font); font-size: 12px; padding: 8px 10px; border-radius: 4px;
+}
+.modal textarea { resize: vertical; min-height: 60px; }
+.modal-buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.hint { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>SPUR <span>event relay</span></h1>
+  <div class="stats">
+    <div><span class="num" id="stat-routes">0</span> routes</div>
+    <div><span class="num" id="stat-events">0</span> events</div>
+    <div><span class="num" id="stat-delivered">0</span> delivered</div>
+  </div>
+</header>
+
+<div class="container">
+  <div class="tabs">
+    <button class="tab active" data-tab="routes" onclick="switchTab('routes')">Routes</button>
+    <button class="tab" data-tab="events" onclick="switchTab('events')">Event Log</button>
+  </div>
+
+  <div class="section active" id="section-routes">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div style="font-size:13px;color:var(--text-dim);">Configure where events get routed</div>
+      <button id="add-route-btn" onclick="openRouteModal()">+ New Route</button>
+    </div>
+    <div id="routes-list"></div>
+  </div>
+
+  <div class="section" id="section-events">
+    <div id="events-list"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <h2 id="modal-title">New Route</h2>
+    <input type="hidden" id="route-id">
+    <label>Name</label>
+    <input type="text" id="route-name" placeholder="e.g. board-updates-to-telegram">
+    <label>Source Filter</label>
+    <input type="text" id="route-filter" placeholder="e.g. event:card_moved or leave empty for all">
+    <div class="hint">Format: field:value,field2:value2 — supports * wildcards. Empty = match all.</div>
+    <label>Destination Type</label>
+    <select id="route-dest-type" onchange="updateConfigHint()">
+      <option value="telegram">Telegram</option>
+      <option value="slack">Slack</option>
+      <option value="discord">Discord</option>
+      <option value="http">HTTP</option>
+    </select>
+    <label>Destination Config (JSON)</label>
+    <textarea id="route-dest-config" rows="3"></textarea>
+    <div class="hint" id="config-hint">{"bot_token": "...", "chat_id": "..."}</div>
+    <label>Message Template</label>
+    <textarea id="route-template" placeholder="e.g. [{event}] {title} — {details.status}"></textarea>
+    <div class="hint">Use {field} or {field.subfield} placeholders. Leave empty for auto-format.</div>
+    <div class="modal-buttons">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveRoute()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let currentTab = 'routes';
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.section').forEach(s => s.classList.toggle('active', s.id === 'section-' + tab));
+  if (tab === 'events') fetchEvents();
+}
+
+async function fetchRoutes() {
+  try {
+    const res = await fetch(`${API}/api/routes`);
+    const routes = await res.json();
+    document.getElementById('stat-routes').textContent = routes.filter(r => r.enabled).length;
+    const list = document.getElementById('routes-list');
+    if (!routes.length) {
+      list.innerHTML = '<div class="empty-state">No routes configured. Create one to start relaying events.</div>';
+      return;
+    }
+    list.innerHTML = routes.map(r => {
+      const destClass = 'dest-' + r.destination_type;
+      const filter = r.source_filter || 'all events';
+      return `
+        <div class="route-card ${r.enabled ? '' : 'disabled'}">
+          <div class="route-header">
+            <span class="route-name">${escHtml(r.name)}</span>
+            <div class="route-meta">
+              <span class="dest-badge ${destClass}">${r.destination_type}</span>
+              ${r.enabled ? '' : '<span style="color:var(--red)">disabled</span>'}
+            </div>
+          </div>
+          <div class="route-details">
+            Filter: <code>${escHtml(filter)}</code>
+            ${r.template ? '<br>Template: <code>' + escHtml(r.template.substring(0, 80)) + '</code>' : ''}
+          </div>
+          <div class="route-actions">
+            <button class="btn" onclick="testRoute('${r.id}')">Test</button>
+            <button class="btn" onclick="toggleRoute('${r.id}', ${r.enabled ? 'false' : 'true'})">${r.enabled ? 'Disable' : 'Enable'}</button>
+            <button class="btn btn-danger" onclick="deleteRoute('${r.id}')">Delete</button>
+          </div>
+        </div>`;
+    }).join('');
+  } catch (e) { console.error(e); }
+}
+
+async function fetchEvents() {
+  try {
+    const res = await fetch(`${API}/api/events?limit=50`);
+    const events = await res.json();
+    const list = document.getElementById('events-list');
+    if (!events.length) {
+      list.innerHTML = '<div class="empty-state">No events received yet. POST to /api/events to start.</div>';
+      return;
+    }
+    list.innerHTML = events.map(e => {
+      const matched = e.matched_routes.length;
+      return `
+        <div class="event-row">
+          <div class="event-left">
+            <span class="event-type">${escHtml(e.event_type || '(none)')}</span>
+            <span class="event-source">${escHtml(e.source || '')}</span>
+          </div>
+          <div class="event-right">
+            ${matched ? `<span class="match-count">${matched} route${matched>1?'s':''}</span>` : ''}
+            <span class="status-${e.status}">${e.status}</span>
+            <span>${timeAgo(e.timestamp)}</span>
+          </div>
+        </div>`;
+    }).join('');
+  } catch (e) { console.error(e); }
+}
+
+async function fetchStats() {
+  try {
+    const res = await fetch(`${API}/api/events/stats`);
+    const s = await res.json();
+    document.getElementById('stat-events').textContent = s.total_events;
+    document.getElementById('stat-delivered').textContent = s.delivered;
+    document.getElementById('stat-routes').textContent = s.active_routes;
+  } catch (e) {}
+}
+
+function updateConfigHint() {
+  const hints = {
+    telegram: '{"bot_token": "123:ABC...", "chat_id": "-100..."}',
+    slack: '{"webhook_url": "https://hooks.slack.com/services/..."}',
+    discord: '{"webhook_url": "https://discord.com/api/webhooks/..."}',
+    http: '{"url": "https://...", "method": "POST", "headers": {}}'
+  };
+  document.getElementById('config-hint').textContent = hints[document.getElementById('route-dest-type').value] || '';
+}
+
+function openRouteModal(route) {
+  document.getElementById('modal-title').textContent = route ? 'Edit Route' : 'New Route';
+  document.getElementById('route-id').value = route ? route.id : '';
+  document.getElementById('route-name').value = route ? route.name : '';
+  document.getElementById('route-filter').value = route ? route.source_filter : '';
+  document.getElementById('route-dest-type').value = route ? route.destination_type : 'telegram';
+  document.getElementById('route-dest-config').value = route ? JSON.stringify(route.destination_config, null, 2) : '';
+  document.getElementById('route-template').value = route ? route.template : '';
+  updateConfigHint();
+  document.getElementById('modal-overlay').classList.add('active');
+}
+
+function closeModal() { document.getElementById('modal-overlay').classList.remove('active'); }
+
+async function saveRoute() {
+  const id = document.getElementById('route-id').value;
+  let config;
+  try { config = JSON.parse(document.getElementById('route-dest-config').value || '{}'); } catch (e) { alert('Invalid JSON in config'); return; }
+  const data = {
+    name: document.getElementById('route-name').value.trim(),
+    source_filter: document.getElementById('route-filter').value.trim(),
+    destination_type: document.getElementById('route-dest-type').value,
+    destination_config: config,
+    template: document.getElementById('route-template').value
+  };
+  if (!data.name) { alert('Name is required'); return; }
+  try {
+    if (id) {
+      await fetch(`${API}/api/routes/${id}`, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+    } else {
+      await fetch(`${API}/api/routes`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+    }
+    closeModal(); fetchRoutes(); fetchStats();
+  } catch (e) { alert('Error saving route'); }
+}
+
+async function deleteRoute(id) {
+  if (!confirm('Delete this route?')) return;
+  await fetch(`${API}/api/routes/${id}`, { method: 'DELETE' });
+  fetchRoutes(); fetchStats();
+}
+
+async function toggleRoute(id, enabled) {
+  await fetch(`${API}/api/routes/${id}`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ enabled: enabled === 'true' })
+  });
+  fetchRoutes();
+}
+
+async function testRoute(id) {
+  const res = await fetch(`${API}/api/routes/${id}/test`, { method: 'POST' });
+  const data = await res.json();
+  alert('Test sent: ' + data.message);
+}
+
+document.getElementById('modal-overlay').onclick = e => { if (e.target === e.currentTarget) closeModal(); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function timeAgo(iso) {
+  const ms = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(ms/1000), m = Math.floor(s/60), h = Math.floor(m/60), d = Math.floor(h/24);
+  if (d > 0) return d + 'd ago';
+  if (h > 0) return h + 'h ago';
+  if (m > 0) return m + 'm ago';
+  return 'just now';
+}
+
+fetchRoutes(); fetchStats();
+setInterval(() => { fetchRoutes(); fetchStats(); if (currentTab === 'events') fetchEvents(); }, 10000);
+</script>
+</body>
+</html>

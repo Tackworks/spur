@@ -123,6 +123,18 @@ header h1 span { color: var(--text-dim); font-weight: 400; font-size: 13px; marg
   text-align: center; padding: 48px 24px; color: var(--text-dim);
   font-size: 13px; border: 1px dashed var(--border); border-radius: 8px;
 }
+.btn-replay {
+  padding: 2px 8px; border: 1px solid var(--blue); border-radius: 4px;
+  font-size: 10px; font-family: var(--font); cursor: pointer;
+  background: transparent; color: var(--blue); transition: all 0.15s;
+}
+.btn-replay:hover { background: var(--blue-bg); }
+.btn-replay:disabled { opacity: 0.4; cursor: default; }
+.replay-badge {
+  font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600;
+  background: var(--blue-bg); color: var(--blue); text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
 
 /* Modal */
 .modal-overlay {
@@ -265,9 +277,11 @@ async function fetchEvents() {
     }
     list.innerHTML = events.map(e => {
       const matched = e.matched_routes.length;
+      const isReplay = e.event_type && e.event_type.startsWith('replay:');
       return `
         <div class="event-row">
           <div class="event-left">
+            ${isReplay ? '<span class="replay-badge">REPLAY</span>' : ''}
             <span class="event-type">${escHtml(e.event_type || '(none)')}</span>
             <span class="event-source">${escHtml(e.source || '')}</span>
           </div>
@@ -275,6 +289,7 @@ async function fetchEvents() {
             ${matched ? `<span class="match-count">${matched} route${matched>1?'s':''}</span>` : ''}
             <span class="status-${e.status}">${e.status}</span>
             <span>${timeAgo(e.timestamp)}</span>
+            <button class="btn btn-replay" onclick="replayEvent(${e.id})">Replay</button>
           </div>
         </div>`;
     }).join('');
@@ -355,6 +370,25 @@ async function testRoute(id) {
   const res = await fetch(`${API}/api/routes/${id}/test`, { method: 'POST' });
   const data = await res.json();
   alert('Test sent: ' + data.message);
+}
+
+async function replayEvent(id) {
+  try {
+    const res = await fetch(`${API}/api/events/${id}/replay`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      const msg = data.matched > 0
+        ? `Replayed. Matched ${data.matched} route(s): ${data.delivered_to.map(d => d.route).join(', ')}`
+        : 'Replayed. No routes matched.';
+      alert(msg);
+      fetchEvents();
+      fetchStats();
+    } else {
+      alert('Replay failed: ' + (data.detail || 'Unknown error'));
+    }
+  } catch (e) {
+    alert('Replay error: ' + e.message);
+  }
 }
 
 document.getElementById('modal-overlay').onclick = e => { if (e.target === e.currentTarget) closeModal(); };

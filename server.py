@@ -19,7 +19,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 DB_PATH = Path(os.environ.get("SPUR_DB", str(Path(__file__).parent / "data" / "spur.db")))
 STATIC_DIR = Path(__file__).parent / "static"
@@ -97,6 +97,11 @@ class RouteUpdate(BaseModel):
     destination_config: Optional[dict] = None
     template: Optional[str] = None
     enabled: Optional[bool] = None
+
+class BulkReplayRequest(BaseModel):
+    event_type: Optional[str] = None
+    status: Optional[str] = None
+    since: Optional[str] = None
 
 
 # --- Template Engine ---
@@ -290,6 +295,52 @@ def match_routes(event_type: str, source: str, payload: dict) -> list[dict]:
     return matched
 
 
+# --- Core Event Processing ---
+
+def process_event(event_type: str, source: str, payload: dict, event_type_prefix: str = "") -> dict:
+    """Core event processing: match routes, log, deliver.
+
+    Args:
+        event_type: The event type string used for route matching.
+        source: The source string used for route matching.
+        payload: The full event payload dict.
+        event_type_prefix: If set, prepended to event_type in the log entry (e.g. "replay:").
+
+    Returns:
+        dict with matched count, delivered_to list, and the logged event_type.
+    """
+    ts = now_iso()
+
+    # Match routes using the original event_type (not the prefixed version)
+    matched = match_routes(event_type, source, payload)
+    matched_ids = [r["id"] for r in matched]
+
+    # Log with optional prefix
+    logged_type = f"{event_type_prefix}{event_type}" if event_type_prefix else event_type
+
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO events (event_type, source, payload, matched_routes, status, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+            (logged_type, source, json.dumps(payload), json.dumps(matched_ids),
+             "delivered" if matched else "no_match", ts)
+        )
+
+    # Deliver to each matched route
+    delivered_to = []
+    for route in matched:
+        config = json.loads(route["destination_config"]) if isinstance(route["destination_config"], str) else route["destination_config"]
+        template = route.get("template", "")
+        message = render_template(template, payload)
+        deliver(route["destination_type"], config, message, payload)
+        delivered_to.append({"route": route["name"], "destination": route["destination_type"]})
+
+    return {
+        "matched": len(matched),
+        "delivered_to": delivered_to,
+        "event_type": logged_type
+    }
+
+
 # --- API Routes ---
 
 @app.post("/api/events", status_code=201)
@@ -299,33 +350,13 @@ async def receive_event(request: Request):
 
     event_type = data.get("event", data.get("event_type", ""))
     source = data.get("source", "")
-    ts = now_iso()
 
-    # Match routes
-    matched = match_routes(event_type, source, data)
-    matched_ids = [r["id"] for r in matched]
-
-    # Log the event
-    with get_db() as db:
-        db.execute(
-            "INSERT INTO events (event_type, source, payload, matched_routes, status, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-            (event_type, source, json.dumps(data), json.dumps(matched_ids),
-             "delivered" if matched else "no_match", ts)
-        )
-
-    # Deliver to each matched route
-    delivered_to = []
-    for route in matched:
-        config = json.loads(route["destination_config"]) if isinstance(route["destination_config"], str) else route["destination_config"]
-        template = route.get("template", "")
-        message = render_template(template, data)
-        deliver(route["destination_type"], config, message, data)
-        delivered_to.append({"route": route["name"], "destination": route["destination_type"]})
+    result = process_event(event_type, source, data)
 
     return {
         "status": "ok",
-        "matched": len(matched),
-        "delivered_to": delivered_to
+        "matched": result["matched"],
+        "delivered_to": result["delivered_to"]
     }
 
 
@@ -468,6 +499,85 @@ def list_events(limit: int = 50, event_type: Optional[str] = None, status: Optio
         event["matched_routes"] = json.loads(event["matched_routes"])
         events.append(event)
     return events
+
+
+@app.post("/api/events/{event_id}/replay")
+def replay_event(event_id: int):
+    """Replay a single event by ID. Re-processes it through route matching and delivery.
+    Logs a new event entry with event_type prefixed as 'replay:' to distinguish from originals."""
+    with get_db() as db:
+        row = db.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Event not found")
+
+    event = dict(row)
+    payload = json.loads(event["payload"])
+
+    # Use the original event_type for matching (strip any existing replay: prefix)
+    original_type = event["event_type"]
+    if original_type.startswith("replay:"):
+        original_type = original_type[len("replay:"):]
+
+    source = event["source"]
+
+    result = process_event(original_type, source, payload, event_type_prefix="replay:")
+
+    return {
+        "status": "ok",
+        "original_event_id": event_id,
+        "replayed_event_type": result["event_type"],
+        "matched": result["matched"],
+        "delivered_to": result["delivered_to"]
+    }
+
+
+@app.post("/api/events/replay")
+def replay_events_bulk(filters: BulkReplayRequest):
+    """Replay multiple events matching the given filters.
+    Accepts event_type, status, and since (ISO timestamp) as filters.
+    Each replayed event is logged with 'replay:' prefix."""
+    query = "SELECT * FROM events WHERE 1=1"
+    params: list = []
+
+    if filters.event_type:
+        query += " AND event_type = ?"
+        params.append(filters.event_type)
+    if filters.status:
+        query += " AND status = ?"
+        params.append(filters.status)
+    if filters.since:
+        query += " AND timestamp >= ?"
+        params.append(filters.since)
+
+    query += " ORDER BY timestamp ASC"
+
+    with get_db() as db:
+        rows = db.execute(query, params).fetchall()
+
+    results = []
+    for row in rows:
+        event = dict(row)
+        payload = json.loads(event["payload"])
+
+        original_type = event["event_type"]
+        if original_type.startswith("replay:"):
+            original_type = original_type[len("replay:"):]
+
+        source = event["source"]
+
+        result = process_event(original_type, source, payload, event_type_prefix="replay:")
+        results.append({
+            "original_event_id": event["id"],
+            "replayed_event_type": result["event_type"],
+            "matched": result["matched"],
+            "delivered_to": result["delivered_to"]
+        })
+
+    return {
+        "status": "ok",
+        "total_replayed": len(results),
+        "results": results
+    }
 
 
 @app.get("/api/events/stats")

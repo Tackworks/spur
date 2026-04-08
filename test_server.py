@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -212,12 +213,12 @@ class TestEventProcessing:
         mock_deliver.assert_called_once()
 
     @patch("server.deliver")
-    def test_event_logged_as_delivered(self, mock_deliver, client):
+    def test_event_logged_as_matched(self, mock_deliver, client):
         _make_route(client, name="r1")
         client.post("/api/events", json={"event": "x", "source": "y"})
         events = client.get("/api/events").json()
         assert len(events) == 1
-        assert events[0]["status"] == "delivered"
+        assert events[0]["status"] == "matched"
         assert len(events[0]["matched_routes"]) == 1
         assert events[0]["matched_routes"][0].startswith("rt-")
 
@@ -527,7 +528,7 @@ class TestEventStats:
     @patch("server.deliver")
     def test_stats_after_events(self, mock_deliver, client):
         _make_route(client, name="stat-route", source_filter="event:push")
-        # 2 matching events -> delivered
+        # 2 matching events -> "matched" initially (deliver is mocked, so no thread updates to "delivered")
         client.post("/api/events", json={"event": "push", "source": "x"})
         client.post("/api/events", json={"event": "push", "source": "y"})
         # 1 non-matching event -> no_match
@@ -535,7 +536,8 @@ class TestEventStats:
 
         stats = client.get("/api/events/stats").json()
         assert stats["total_events"] == 3
-        assert stats["delivered"] == 2
+        # With deliver mocked, status stays "matched" (not "delivered")
+        assert stats["delivered"] == 0
         assert stats["no_match"] == 1
         assert stats["active_routes"] == 1
 
@@ -706,12 +708,14 @@ class TestMatrixDelivery:
         body = json.loads(req.data.decode())
         assert body["content"] == "hello"
 
+    @patch("server._validate_http_url")
     @patch("server.urllib.request.urlopen")
-    def test_http_delivery(self, mock_urlopen, client):
+    def test_http_delivery(self, mock_urlopen, mock_validate, client):
         import server as srv
         config = {"url": "https://example.com/hook", "method": "POST", "headers": {"X-Custom": "val"}}
         event_data = {"event": "test", "source": "spur"}
         srv._send_http(config, "hello", event_data)
+        mock_validate.assert_called_once_with("https://example.com/hook")
         mock_urlopen.assert_called_once()
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://example.com/hook"
@@ -763,9 +767,10 @@ class TestEventLogFiltering:
         client.post("/api/events", json={"event": "push", "source": "a"})
         client.post("/api/events", json={"event": "other", "source": "b"})
 
-        delivered = client.get("/api/events?status=delivered").json()
-        assert len(delivered) == 1
-        assert delivered[0]["status"] == "delivered"
+        # With deliver mocked, matched events stay as "matched" (not "delivered")
+        matched = client.get("/api/events?status=matched").json()
+        assert len(matched) == 1
+        assert matched[0]["status"] == "matched"
 
         no_match = client.get("/api/events?status=no_match").json()
         assert len(no_match) == 1
@@ -778,7 +783,8 @@ class TestEventLogFiltering:
         client.post("/api/events", json={"event": "push", "source": "b"})
         client.post("/api/events", json={"event": "deploy", "source": "c"})
 
-        events = client.get("/api/events?event_type=push&status=delivered").json()
+        # With deliver mocked, matched events stay as "matched"
+        events = client.get("/api/events?event_type=push&status=matched").json()
         assert len(events) == 2
 
     def test_list_events_order_descending(self, client):
@@ -856,5 +862,8 @@ class TestEdgeCases:
             long_msg = "x" * 5000
             srv._send_telegram({"bot_token": "tok", "chat_id": "123"}, long_msg)
             url = mock_url.call_args[0][0]
-            # The text param in the URL should be truncated to 4096
-            assert "text=" in url
+            # Parse the query string and verify the text param is truncated to 4096
+            parsed = urllib.parse.urlparse(url)
+            params = urllib.parse.parse_qs(parsed.query)
+            assert "text" in params
+            assert len(params["text"][0]) == 4096

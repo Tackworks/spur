@@ -8,6 +8,9 @@ import sqlite3
 import json
 import uuid
 import os
+import hmac
+import ipaddress
+import socket
 import urllib.request
 import urllib.parse
 import threading
@@ -18,7 +21,7 @@ from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -46,7 +49,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if request.method in READ_METHODS:
             return await call_next(request)
         key = request.headers.get("x-api-key") or request.headers.get("authorization", "").removeprefix("Bearer ")
-        if key != API_KEY:
+        if not hmac.compare_digest(key, API_KEY):
             return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key"})
         return await call_next(request)
 
@@ -90,6 +93,8 @@ def init_db():
 @contextmanager
 def get_db():
     conn = sqlite3.connect(str(DB_PATH))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -107,19 +112,19 @@ def now_iso():
 VALID_DEST_TYPES = ["telegram", "slack", "discord", "matrix", "http"]
 
 class RouteCreate(BaseModel):
-    name: str
-    source_filter: str = ""
+    name: str = Field(max_length=200)
+    source_filter: str = Field(default="", max_length=500)
     destination_type: str
     destination_config: dict = {}
-    template: str = ""
+    template: str = Field(default="", max_length=10000)
     enabled: bool = True
 
 class RouteUpdate(BaseModel):
-    name: Optional[str] = None
-    source_filter: Optional[str] = None
+    name: Optional[str] = Field(default=None, max_length=200)
+    source_filter: Optional[str] = Field(default=None, max_length=500)
     destination_type: Optional[str] = None
     destination_config: Optional[dict] = None
-    template: Optional[str] = None
+    template: Optional[str] = Field(default=None, max_length=10000)
     enabled: Optional[bool] = None
 
 class BulkReplayRequest(BaseModel):
@@ -180,8 +185,15 @@ def _flatten_dict(d: dict, prefix: str = "") -> dict:
 
 # --- Delivery ---
 
-def deliver(dest_type: str, config: dict, message: str, event_data: dict):
-    """Deliver a message to a destination. Runs in background thread."""
+def _update_event_status(event_id: int, status: str):
+    """Update the status of an event in the database."""
+    with get_db() as db:
+        db.execute("UPDATE events SET status = ? WHERE id = ?", (status, event_id))
+
+
+def deliver(dest_type: str, config: dict, message: str, event_data: dict, event_id: int = None):
+    """Deliver a message to a destination. Runs in background thread.
+    If event_id is provided, updates the event status to 'delivered' on success or 'failed' on error."""
     def _send():
         try:
             if dest_type == "telegram":
@@ -194,10 +206,14 @@ def deliver(dest_type: str, config: dict, message: str, event_data: dict):
                 _send_matrix(config, message)
             elif dest_type == "http":
                 _send_http(config, message, event_data)
+            if event_id is not None:
+                _update_event_status(event_id, "delivered")
         except Exception as e:
             import traceback
             print(f"[spur] Delivery failed ({dest_type}): {e}", flush=True)
             traceback.print_exc()
+            if event_id is not None:
+                _update_event_status(event_id, "failed")
     threading.Thread(target=_send, daemon=True).start()
 
 
@@ -264,6 +280,51 @@ def _send_matrix(config: dict, message: str):
     urllib.request.urlopen(req, timeout=10)
 
 
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fd00::/8"),
+]
+
+
+def _validate_http_url(url: str):
+    """Validate a URL for SSRF safety. Raises ValueError if the URL targets a private/blocked address."""
+    parsed = urllib.parse.urlparse(url)
+
+    # Block non-http(s) schemes
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Blocked scheme: {parsed.scheme}. Only http and https are allowed.")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL has no hostname")
+
+    # Resolve hostname to IP and check against blocked ranges
+    try:
+        addr = ipaddress.ip_address(hostname)
+    except ValueError:
+        # It's a DNS name — resolve it
+        try:
+            resolved = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            addrs = [ipaddress.ip_address(r[4][0]) for r in resolved]
+        except socket.gaierror:
+            raise ValueError(f"Cannot resolve hostname: {hostname}")
+        for addr in addrs:
+            for net in _BLOCKED_NETWORKS:
+                if addr in net:
+                    raise ValueError(f"Blocked destination: {hostname} resolves to private address {addr}")
+        return
+
+    # Direct IP literal
+    for net in _BLOCKED_NETWORKS:
+        if addr in net:
+            raise ValueError(f"Blocked destination: {addr} is in private range {net}")
+
+
 def _send_http(config: dict, message: str, event_data: dict):
     """Forward to an arbitrary HTTP endpoint."""
     url = config.get("url", "")
@@ -272,6 +333,9 @@ def _send_http(config: dict, message: str, event_data: dict):
     if not url:
         print("[spur] HTTP: missing url")
         return
+
+    _validate_http_url(url)
+
     payload = json.dumps({
         "message": message,
         "event": event_data,
@@ -369,11 +433,12 @@ def process_event(event_type: str, source: str, payload: dict, event_type_prefix
     logged_type = f"{event_type_prefix}{event_type}" if event_type_prefix else event_type
 
     with get_db() as db:
-        db.execute(
+        cursor = db.execute(
             "INSERT INTO events (event_type, source, payload, matched_routes, status, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
             (logged_type, source, json.dumps(payload), json.dumps(matched_ids),
-             "delivered" if matched else "no_match", ts)
+             "matched" if matched else "no_match", ts)
         )
+        event_id = cursor.lastrowid
 
     # Deliver to each matched route
     delivered_to = []
@@ -381,7 +446,7 @@ def process_event(event_type: str, source: str, payload: dict, event_type_prefix
         config = json.loads(route["destination_config"]) if isinstance(route["destination_config"], str) else route["destination_config"]
         template = route.get("template", "")
         message = render_template(template, payload)
-        deliver(route["destination_type"], config, message, payload)
+        deliver(route["destination_type"], config, message, payload, event_id=event_id)
         delivered_to.append({"route": route["name"], "destination": route["destination_type"]})
 
     return {
@@ -396,7 +461,10 @@ def process_event(event_type: str, source: str, payload: dict, event_type_prefix
 @app.post("/api/events", status_code=201)
 async def receive_event(request: Request):
     """Receive an event. Matches against routes, delivers to destinations, logs everything."""
-    data = await request.json()
+    body = await request.body()
+    if len(body) > 1_048_576:  # 1MB
+        raise HTTPException(413, "Request body exceeds 1MB limit")
+    data = json.loads(body)
 
     event_type = data.get("event", data.get("event_type", ""))
     source = data.get("source", "")
@@ -529,6 +597,7 @@ def test_route(route_id: str):
 @app.get("/api/events")
 def list_events(limit: int = 50, event_type: Optional[str] = None, status: Optional[str] = None):
     """Get recent events from the log."""
+    limit = min(limit, 1000)
     query = "SELECT * FROM events WHERE 1=1"
     params = []
     if event_type:

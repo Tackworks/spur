@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Spur</title>
 <style>
-:root {
+:root, [data-theme="dark"] {
   --bg: #0d1117;
   --surface: #161b22;
   --surface-hover: #1c2129;
@@ -25,6 +25,25 @@
   --font: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
 }
 
+[data-theme="light"] {
+  --bg: #f0f2f5;
+  --surface: #ffffff;
+  --surface-hover: #f5f7fa;
+  --border: #d0d5dd;
+  --text: #1a1a2e;
+  --text-dim: #667085;
+  --green: #2d9254;
+  --green-bg: rgba(45,146,84,0.12);
+  --red: #cc3333;
+  --red-bg: rgba(204,51,51,0.1);
+  --amber: #b07d18;
+  --amber-bg: rgba(176,125,24,0.1);
+  --blue: #2e7db8;
+  --blue-bg: rgba(46,125,184,0.1);
+  --purple: #7c4dbd;
+  --purple-bg: rgba(124,77,189,0.1);
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: var(--font); background: var(--bg); color: var(--text); }
 
@@ -37,8 +56,21 @@ header {
 }
 header h1 { font-size: 18px; font-weight: 600; color: var(--purple); }
 header h1 span { color: var(--text-dim); font-weight: 400; font-size: 13px; margin-left: 8px; }
+.header-right { display: flex; gap: 12px; align-items: center; }
 .stats { display: flex; gap: 16px; font-size: 12px; color: var(--text-dim); }
 .stats .num { color: var(--text); font-weight: 600; }
+#theme-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 8px;
+  line-height: 1;
+  transition: color 0.2s;
+}
+#theme-toggle:hover { color: var(--text); }
 
 .container { max-width: 1000px; margin: 0 auto; padding: 24px; }
 
@@ -81,6 +113,7 @@ header h1 span { color: var(--text-dim); font-weight: 400; font-size: 13px; marg
 .dest-slack { background: var(--purple-bg); color: var(--purple); }
 .dest-discord { background: var(--green-bg); color: var(--green); }
 .dest-http { background: var(--amber-bg); color: var(--amber); }
+.dest-matrix { background: var(--green-bg); color: var(--green); }
 
 .route-actions { display: flex; gap: 6px; margin-top: 10px; }
 .btn {
@@ -164,10 +197,13 @@ header h1 span { color: var(--text-dim); font-weight: 400; font-size: 13px; marg
 
 <header>
   <h1>SPUR <span>event relay</span></h1>
-  <div class="stats">
-    <div><span class="num" id="stat-routes">0</span> routes</div>
-    <div><span class="num" id="stat-events">0</span> events</div>
-    <div><span class="num" id="stat-delivered">0</span> delivered</div>
+  <div class="header-right">
+    <div class="stats">
+      <div><span class="num" id="stat-routes">0</span> routes</div>
+      <div><span class="num" id="stat-events">0</span> events</div>
+      <div><span class="num" id="stat-delivered">0</span> delivered</div>
+    </div>
+    <button id="theme-toggle" onclick="toggleTheme()" title="Toggle theme">&#9789;</button>
   </div>
 </header>
 
@@ -204,6 +240,7 @@ header h1 span { color: var(--text-dim); font-weight: 400; font-size: 13px; marg
       <option value="telegram">Telegram</option>
       <option value="slack">Slack</option>
       <option value="discord">Discord</option>
+      <option value="matrix">Matrix</option>
       <option value="http">HTTP</option>
     </select>
     <label>Destination Config (JSON)</label>
@@ -220,6 +257,16 @@ header h1 span { color: var(--text-dim); font-weight: 400; font-size: 13px; marg
 </div>
 
 <script>
+// --- Theme ---
+function getTheme() { return localStorage.getItem('spur-theme') || 'dark'; }
+function setTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('spur-theme', theme);
+  document.getElementById('theme-toggle').innerHTML = theme === 'dark' ? '&#9789;' : '&#9788;';
+}
+function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
+setTheme(getTheme());
+
 const API = '';
 let currentTab = 'routes';
 
@@ -311,6 +358,7 @@ function updateConfigHint() {
     telegram: '{"bot_token": "123:ABC...", "chat_id": "-100..."}',
     slack: '{"webhook_url": "https://hooks.slack.com/services/..."}',
     discord: '{"webhook_url": "https://discord.com/api/webhooks/..."}',
+    matrix: '{"homeserver": "https://matrix.org", "room_id": "!abc:matrix.org", "access_token": "syt_..."}',
     http: '{"url": "https://...", "method": "POST", "headers": {}}'
   };
   document.getElementById('config-hint').textContent = hints[document.getElementById('route-dest-type').value] || '';

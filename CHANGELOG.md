@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.0] - 2026-04-08
+
+### Added
+- **Dark/Light theme toggle** — Click the moon/sun icon in the header. Preference persists via localStorage.
+- **Matrix destination adapter** (Issue #1) — Send events to Matrix rooms via the client-server API. Configure with homeserver URL, room ID, and access token.
+
 ## [1.0.0] - 2026-04-08
 
 Initial public release.

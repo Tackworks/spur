@@ -80,7 +80,7 @@ def now_iso():
 
 # --- Models ---
 
-VALID_DEST_TYPES = ["telegram", "slack", "discord", "http"]
+VALID_DEST_TYPES = ["telegram", "slack", "discord", "matrix", "http"]
 
 class RouteCreate(BaseModel):
     name: str
@@ -166,6 +166,8 @@ def deliver(dest_type: str, config: dict, message: str, event_data: dict):
                 _send_slack(config, message)
             elif dest_type == "discord":
                 _send_discord(config, message)
+            elif dest_type == "matrix":
+                _send_matrix(config, message)
             elif dest_type == "http":
                 _send_http(config, message, event_data)
         except Exception as e:
@@ -211,6 +213,28 @@ def _send_discord(config: dict, message: str):
     payload = json.dumps({"content": message[:2000]}).encode()  # Discord limit
     req = urllib.request.Request(webhook_url, data=payload,
                                  headers={"Content-Type": "application/json"}, method="POST")
+    urllib.request.urlopen(req, timeout=10)
+
+
+def _send_matrix(config: dict, message: str):
+    """Send via Matrix client-server API (PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId})."""
+    homeserver = config.get("homeserver", "").rstrip("/")
+    room_id = config.get("room_id", "")
+    access_token = config.get("access_token", "")
+    if not homeserver or not room_id or not access_token:
+        print("[spur] Matrix: missing homeserver, room_id, or access_token")
+        return
+    txn_id = uuid.uuid4().hex[:12]
+    encoded_room = urllib.parse.quote(room_id, safe='')
+    url = f"{homeserver}/_matrix/client/v3/rooms/{encoded_room}/send/m.room.message/{txn_id}"
+    payload = json.dumps({
+        "msgtype": "m.text",
+        "body": message
+    }).encode()
+    req = urllib.request.Request(url, data=payload,
+                                 headers={"Content-Type": "application/json",
+                                          "Authorization": f"Bearer {access_token}"},
+                                 method="PUT")
     urllib.request.urlopen(req, timeout=10)
 
 

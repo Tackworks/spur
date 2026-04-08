@@ -86,6 +86,7 @@ Set your Tack board's `TACK_WEBHOOKS` to `http://localhost:8797/api/events`. Don
 | `telegram` | `bot_token`, `chat_id`, `parse_mode` | Markdown by default, 4096 char limit |
 | `slack` | `webhook_url` | Incoming webhook |
 | `discord` | `webhook_url` | Discord webhook, 2000 char limit |
+| `matrix` | `homeserver`, `room_id`, `access_token` | Matrix room via client-server API |
 | `http` | `url`, `method`, `headers` | Any HTTP endpoint |
 
 ## Source Filters
@@ -120,6 +121,7 @@ Leave the template empty for sensible auto-formatting.
 | `SPUR_HOST` | `127.0.0.1` | Bind address |
 | `SPUR_PORT` | `8797` | Port number |
 | `SPUR_DB` | `./data/spur.db` | SQLite database path |
+| `SPUR_API_KEY` | (none) | Optional API key for write operations (reads remain open) |
 
 ## Dependencies
 

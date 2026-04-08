@@ -17,7 +17,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install fastapi uvicorn httpx
+        run: pip install fastapi uvicorn httpx pytest
+
+      - name: Lint - syntax check
+        run: python -m py_compile server.py
+
+      - name: Run tests
+        run: pytest test_server.py -v
 
       - name: Smoke test - start server and hit /health
         run: |
@@ -26,12 +32,3 @@ jobs:
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8797/health)
           echo "Health check returned: $STATUS"
           [ "$STATUS" = "200" ] || exit 1
-
-      - name: Run tests (if any exist)
-        run: |
-          if ls test_*.py 1>/dev/null 2>&1; then
-            pip install pytest
-            pytest -v
-          else
-            echo "No test files found, skipping"
-          fi

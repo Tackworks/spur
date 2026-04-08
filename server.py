@@ -20,13 +20,37 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 DB_PATH = Path(os.environ.get("SPUR_DB", str(Path(__file__).parent / "data" / "spur.db")))
 STATIC_DIR = Path(__file__).parent / "static"
 HOST = os.environ.get("SPUR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SPUR_PORT", "8797"))
+API_KEY = os.environ.get("SPUR_API_KEY", "")
 
-app = FastAPI(title="Spur", version="1.0.0")
+app = FastAPI(title="Spur", version="1.1.0")
+
+
+# --- Optional API Key Auth ---
+
+READ_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+class ApiKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if not API_KEY:
+            return await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/static") or path == "/health":
+            return await call_next(request)
+        if request.method in READ_METHODS:
+            return await call_next(request)
+        key = request.headers.get("x-api-key") or request.headers.get("authorization", "").removeprefix("Bearer ")
+        if key != API_KEY:
+            return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key"})
+        return await call_next(request)
+
+app.add_middleware(ApiKeyMiddleware)
 
 
 # --- Database ---
@@ -146,7 +170,7 @@ def _flatten_dict(d: dict, prefix: str = "") -> dict:
         full_key = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
         items[full_key] = v
         if isinstance(v, dict):
-            items.update(_flatten_dict(v, full_key + "."))
+            items.update(_flatten_dict(v, full_key))
     # Also add top-level keys without prefix
     if not prefix:
         for k, v in d.items():
@@ -171,7 +195,9 @@ def deliver(dest_type: str, config: dict, message: str, event_data: dict):
             elif dest_type == "http":
                 _send_http(config, message, event_data)
         except Exception as e:
-            print(f"[spur] Delivery failed ({dest_type}): {e}")
+            import traceback
+            print(f"[spur] Delivery failed ({dest_type}): {e}", flush=True)
+            traceback.print_exc()
     threading.Thread(target=_send, daemon=True).start()
 
 

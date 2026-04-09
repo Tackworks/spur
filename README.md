@@ -10,6 +10,8 @@ Spur sits between your agent system and the outside world. When something happen
 
 No SDK. No message broker. No YAML config files. One Python file, SQLite event log, configure routes via API or web UI.
 
+**Status: alpha.** Developed and tested internally on sandboxed development machines. If you deploy this: inspect the code, run in a VM or isolated environment, and back up your data before upgrading. This has not been independently security audited.
+
 ## Quick Start
 
 ```bash
@@ -62,7 +64,7 @@ curl -X POST http://localhost:8797/api/routes \
   }'
 ```
 
-Set your Tack board's `TACK_WEBHOOKS` to `http://localhost:8797/api/events`. Done.
+Point your Tack board (or any service) at `http://localhost:8797/api/events` to relay events. See [Tack](https://github.com/Tackworks/tack) for the task board.
 
 ## API
 

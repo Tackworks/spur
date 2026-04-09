@@ -240,6 +240,7 @@ def _send_slack(config: dict, message: str):
     if not webhook_url:
         print("[spur] Slack: missing webhook_url")
         return
+    _validate_http_url(webhook_url)
     payload = json.dumps({"text": message}).encode()
     req = urllib.request.Request(webhook_url, data=payload,
                                  headers={"Content-Type": "application/json"}, method="POST")
@@ -252,6 +253,7 @@ def _send_discord(config: dict, message: str):
     if not webhook_url:
         print("[spur] Discord: missing webhook_url")
         return
+    _validate_http_url(webhook_url)
     payload = json.dumps({"content": message[:2000]}).encode()  # Discord limit
     req = urllib.request.Request(webhook_url, data=payload,
                                  headers={"Content-Type": "application/json"}, method="POST")
@@ -266,6 +268,7 @@ def _send_matrix(config: dict, message: str):
     if not homeserver or not room_id or not access_token:
         print("[spur] Matrix: missing homeserver, room_id, or access_token")
         return
+    _validate_http_url(homeserver)
     txn_id = uuid.uuid4().hex[:12]
     encoded_room = urllib.parse.quote(room_id, safe='')
     url = f"{homeserver}/_matrix/client/v3/rooms/{encoded_room}/send/m.room.message/{txn_id}"
@@ -474,7 +477,7 @@ async def receive_event(request: Request):
     return {
         "status": "ok",
         "matched": result["matched"],
-        "delivered_to": result["delivered_to"]
+        "delivering_to": result["delivered_to"]  # delivery is async — these are queued, not yet confirmed
     }
 
 
@@ -499,15 +502,40 @@ def create_route(route: RouteCreate):
     return {"id": route_id, "status": "created"}
 
 
+_SENSITIVE_CONFIG_KEYS = {
+    "bot_token", "webhook_url", "access_token", "token", "secret",
+    "password", "api_key", "authorization",
+}
+
+
+def _redact_config(config: dict) -> dict:
+    """Redact sensitive values from destination_config for read endpoints.
+    Shows field names and value lengths but never the actual secrets."""
+    redacted = {}
+    for k, v in config.items():
+        if k.lower() in _SENSITIVE_CONFIG_KEYS or k.lower().endswith(("_token", "_secret", "_key")):
+            if isinstance(v, str) and v:
+                redacted[k] = f"***redacted ({len(v)} chars)***"
+            else:
+                redacted[k] = "***redacted***"
+        elif isinstance(v, dict):
+            # Redact nested dicts (e.g. headers that may contain auth tokens)
+            redacted[k] = _redact_config(v)
+        else:
+            redacted[k] = v
+    return redacted
+
+
 @app.get("/api/routes")
 def list_routes():
-    """List all routes."""
+    """List all routes. Sensitive config values (tokens, URLs, keys) are redacted."""
     with get_db() as db:
         rows = db.execute("SELECT * FROM routes ORDER BY created_at ASC").fetchall()
     routes = []
     for row in rows:
         route = dict(row)
-        route["destination_config"] = json.loads(route["destination_config"])
+        raw_config = json.loads(route["destination_config"])
+        route["destination_config"] = _redact_config(raw_config)
         route["enabled"] = bool(route["enabled"])
         routes.append(route)
     return routes
@@ -515,13 +543,14 @@ def list_routes():
 
 @app.get("/api/routes/{route_id}")
 def get_route(route_id: str):
-    """Get a single route."""
+    """Get a single route. Sensitive config values (tokens, URLs, keys) are redacted."""
     with get_db() as db:
         row = db.execute("SELECT * FROM routes WHERE id = ?", (route_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Route not found")
     route = dict(row)
-    route["destination_config"] = json.loads(route["destination_config"])
+    raw_config = json.loads(route["destination_config"])
+    route["destination_config"] = _redact_config(raw_config)
     route["enabled"] = bool(route["enabled"])
     return route
 
@@ -668,7 +697,7 @@ def replay_events_bulk(filters: BulkReplayRequest):
         query += " AND timestamp >= ?"
         params.append(filters.since)
 
-    query += " ORDER BY timestamp ASC"
+    query += " ORDER BY timestamp ASC LIMIT 500"
 
     with get_db() as db:
         rows = db.execute(query, params).fetchall()

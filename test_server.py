@@ -140,11 +140,16 @@ class TestRouteCRUD:
         resp = client.delete("/api/routes/rt-nope")
         assert resp.status_code == 404
 
-    def test_route_destination_config_roundtrip(self, client):
+    def test_route_destination_config_redacted_on_read(self, client):
+        """Sensitive config values must be redacted in GET responses."""
         cfg = {"bot_token": "tok123", "chat_id": "456"}
         route_id = _make_route(client, destination_type="telegram", destination_config=cfg)["id"]
         fetched = client.get(f"/api/routes/{route_id}").json()
-        assert fetched["destination_config"] == cfg
+        # bot_token is sensitive — must be redacted
+        assert "tok123" not in json.dumps(fetched)
+        assert "***redacted" in fetched["destination_config"]["bot_token"]
+        # chat_id is not sensitive — should come back
+        assert fetched["destination_config"]["chat_id"] == "456"
 
     def test_created_at_and_updated_at(self, client):
         route_id = _make_route(client)["id"]
@@ -197,7 +202,7 @@ class TestEventProcessing:
         body = resp.json()
         assert body["status"] == "ok"
         assert body["matched"] == 0
-        assert body["delivered_to"] == []
+        assert body["delivering_to"] == []
 
     @patch("server.deliver")
     def test_receive_event_matches_route(self, mock_deliver, client):
@@ -209,7 +214,7 @@ class TestEventProcessing:
         assert resp.status_code == 201
         body = resp.json()
         assert body["matched"] == 1
-        assert body["delivered_to"][0]["route"] == "catch-all"
+        assert body["delivering_to"][0]["route"] == "catch-all"
         mock_deliver.assert_called_once()
 
     @patch("server.deliver")
@@ -633,7 +638,8 @@ class TestEnableDisableRoutes:
 
 class TestMatrixDelivery:
     @patch("server.urllib.request.urlopen")
-    def test_matrix_delivery_constructs_correct_request(self, mock_urlopen, client):
+    @patch("server._validate_http_url")
+    def test_matrix_delivery_constructs_correct_request(self, mock_validate, mock_urlopen, client):
         """Verify _send_matrix builds the right URL, headers, and payload."""
         import server as srv
 
@@ -646,6 +652,7 @@ class TestMatrixDelivery:
 
         srv._send_matrix(config, message)
 
+        mock_validate.assert_called_once_with("https://matrix.example.com")
         mock_urlopen.assert_called_once()
         req = mock_urlopen.call_args[0][0]
         assert "/_matrix/client/v3/rooms/" in req.full_url
@@ -665,7 +672,8 @@ class TestMatrixDelivery:
         mock_urlopen.assert_not_called()
 
     @patch("server.urllib.request.urlopen")
-    def test_matrix_homeserver_trailing_slash_stripped(self, mock_urlopen, client):
+    @patch("server._validate_http_url")
+    def test_matrix_homeserver_trailing_slash_stripped(self, mock_validate, mock_urlopen, client):
         import server as srv
         config = {
             "homeserver": "https://matrix.example.com/",
@@ -687,22 +695,26 @@ class TestMatrixDelivery:
         assert "api.telegram.org/bot123:ABC/sendMessage" in url
         assert "chat_id=789" in url
 
+    @patch("server._validate_http_url")
     @patch("server.urllib.request.urlopen")
-    def test_slack_delivery(self, mock_urlopen, client):
+    def test_slack_delivery(self, mock_urlopen, mock_validate, client):
         import server as srv
         config = {"webhook_url": "https://hooks.slack.com/test"}
         srv._send_slack(config, "hello")
+        mock_validate.assert_called_once_with("https://hooks.slack.com/test")
         mock_urlopen.assert_called_once()
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://hooks.slack.com/test"
         body = json.loads(req.data.decode())
         assert body["text"] == "hello"
 
+    @patch("server._validate_http_url")
     @patch("server.urllib.request.urlopen")
-    def test_discord_delivery(self, mock_urlopen, client):
+    def test_discord_delivery(self, mock_urlopen, mock_validate, client):
         import server as srv
         config = {"webhook_url": "https://discord.com/api/webhooks/test"}
         srv._send_discord(config, "hello")
+        mock_validate.assert_called_once_with("https://discord.com/api/webhooks/test")
         mock_urlopen.assert_called_once()
         req = mock_urlopen.call_args[0][0]
         body = json.loads(req.data.decode())
@@ -847,7 +859,7 @@ class TestEdgeCases:
     def test_discord_message_truncation(self, mock_deliver, client):
         """Discord has a 2000-char limit. Verify truncation."""
         import server as srv
-        with patch("server.urllib.request.urlopen") as mock_url:
+        with patch("server._validate_http_url"), patch("server.urllib.request.urlopen") as mock_url:
             long_msg = "x" * 3000
             srv._send_discord({"webhook_url": "https://discord.com/api/webhooks/test"}, long_msg)
             req = mock_url.call_args[0][0]
@@ -867,3 +879,182 @@ class TestEdgeCases:
             params = urllib.parse.parse_qs(parsed.query)
             assert "text" in params
             assert len(params["text"][0]) == 4096
+
+
+# ---------------------------------------------------------------------------
+# Secret Redaction Tests
+# ---------------------------------------------------------------------------
+
+class TestSecretRedaction:
+    """Verify that GET /api/routes never leaks sensitive config values."""
+
+    def test_route_list_redacts_bot_token(self, client):
+        """Telegram bot tokens must never appear in list responses."""
+        _make_route(client,
+                    destination_type="telegram",
+                    destination_config={"bot_token": "123456:ABC-DEF", "chat_id": "999"})
+        routes = client.get("/api/routes").json()
+        config = routes[0]["destination_config"]
+        assert "123456:ABC-DEF" not in json.dumps(config)
+        assert "***redacted" in config["bot_token"]
+        # chat_id is not sensitive — should be visible
+        assert config["chat_id"] == "999"
+
+    def test_route_get_redacts_webhook_url(self, client):
+        """Slack/Discord webhook URLs must be redacted."""
+        resp = _make_route(client,
+                           destination_type="slack",
+                           destination_config={"webhook_url": "https://hooks.slack.com/T0/B0/secret123"})
+        route_id = resp["id"]
+        route = client.get(f"/api/routes/{route_id}").json()
+        assert "secret123" not in json.dumps(route)
+        assert "***redacted" in route["destination_config"]["webhook_url"]
+
+    def test_route_get_redacts_access_token(self, client):
+        """Matrix access tokens must be redacted."""
+        resp = _make_route(client,
+                           destination_type="matrix",
+                           destination_config={
+                               "homeserver": "https://matrix.example.com",
+                               "room_id": "!abc:example.com",
+                               "access_token": "syt_super_secret_token"
+                           })
+        route_id = resp["id"]
+        route = client.get(f"/api/routes/{route_id}").json()
+        assert "syt_super_secret_token" not in json.dumps(route)
+        assert "***redacted" in route["destination_config"]["access_token"]
+        # homeserver and room_id are not sensitive
+        assert route["destination_config"]["homeserver"] == "https://matrix.example.com"
+        assert route["destination_config"]["room_id"] == "!abc:example.com"
+
+    def test_route_get_redacts_http_headers(self, client):
+        """HTTP destination headers may contain auth tokens — redact nested dicts."""
+        resp = _make_route(client,
+                           destination_type="http",
+                           destination_config={
+                               "url": "https://example.com/webhook",
+                               "headers": {"authorization": "Bearer secret-jwt-token"},
+                               "method": "POST"
+                           })
+        route_id = resp["id"]
+        route = client.get(f"/api/routes/{route_id}").json()
+        headers = route["destination_config"]["headers"]
+        assert "secret-jwt-token" not in json.dumps(headers)
+        assert "***redacted" in headers["authorization"]
+        # url and method are not sensitive
+        assert route["destination_config"]["url"] == "https://example.com/webhook"
+        assert route["destination_config"]["method"] == "POST"
+
+
+# ---------------------------------------------------------------------------
+# Auth Tests
+# ---------------------------------------------------------------------------
+
+class TestAuth:
+    """Verify API key middleware works correctly."""
+
+    @pytest.fixture()
+    def authed_client(self, tmp_path):
+        """Client with API key auth enabled."""
+        os.environ["SPUR_API_KEY"] = "test-spur-key"
+        import importlib
+        import server as srv
+        srv.DB_PATH = tmp_path / "spur_auth_test.db"
+        importlib.reload(srv)
+        srv.DB_PATH = tmp_path / "spur_auth_test.db"
+        srv.init_db()
+        with TestClient(srv.app) as tc:
+            yield tc
+        os.environ.pop("SPUR_API_KEY", None)
+        importlib.reload(srv)
+
+    def test_write_blocked_without_key(self, authed_client):
+        resp = authed_client.post("/api/routes", json={
+            "name": "test", "destination_type": "telegram",
+            "destination_config": {"bot_token": "t", "chat_id": "c"}
+        })
+        assert resp.status_code == 401
+
+    def test_write_allowed_with_key(self, authed_client):
+        resp = authed_client.post("/api/routes", json={
+            "name": "test", "destination_type": "telegram",
+            "destination_config": {"bot_token": "t", "chat_id": "c"}
+        }, headers={"X-API-Key": "test-spur-key"})
+        assert resp.status_code == 201
+
+    def test_write_blocked_wrong_key(self, authed_client):
+        resp = authed_client.post("/api/routes", json={
+            "name": "test", "destination_type": "telegram",
+            "destination_config": {"bot_token": "t", "chat_id": "c"}
+        }, headers={"X-API-Key": "wrong-key"})
+        assert resp.status_code == 401
+
+    def test_bearer_auth(self, authed_client):
+        resp = authed_client.post("/api/routes", json={
+            "name": "test", "destination_type": "telegram",
+            "destination_config": {"bot_token": "t", "chat_id": "c"}
+        }, headers={"Authorization": "Bearer test-spur-key"})
+        assert resp.status_code == 201
+
+    def test_reads_allowed_without_key(self, authed_client):
+        """GET endpoints should work without auth."""
+        assert authed_client.get("/api/routes").status_code == 200
+        assert authed_client.get("/api/events").status_code == 200
+        assert authed_client.get("/health").status_code == 200
+
+    def test_event_post_blocked_without_key(self, authed_client):
+        resp = authed_client.post("/api/events", json={"event": "test"})
+        assert resp.status_code == 401
+
+    def test_event_post_allowed_with_key(self, authed_client):
+        resp = authed_client.post("/api/events", json={"event": "test"},
+                                  headers={"X-API-Key": "test-spur-key"})
+        assert resp.status_code == 201
+
+
+# ---------------------------------------------------------------------------
+# SSRF Validation Tests
+# ---------------------------------------------------------------------------
+
+class TestSSRFProtection:
+    """Verify _validate_http_url blocks private/internal addresses."""
+
+    def test_blocks_localhost(self):
+        import server as srv
+        with pytest.raises(ValueError, match="private"):
+            srv._validate_http_url("http://127.0.0.1/admin")
+
+    def test_blocks_private_10(self):
+        import server as srv
+        with pytest.raises(ValueError, match="private"):
+            srv._validate_http_url("http://10.0.0.1/secret")
+
+    def test_blocks_private_192(self):
+        import server as srv
+        with pytest.raises(ValueError, match="private"):
+            srv._validate_http_url("http://192.168.1.1/config")
+
+    def test_blocks_private_172(self):
+        import server as srv
+        with pytest.raises(ValueError, match="private"):
+            srv._validate_http_url("http://172.16.0.1/internal")
+
+    def test_blocks_ipv6_loopback(self):
+        import server as srv
+        with pytest.raises(ValueError, match="private|Blocked"):
+            srv._validate_http_url("http://[::1]/admin")
+
+    def test_allows_public_ip(self):
+        import server as srv
+        # Should not raise for a public IP
+        srv._validate_http_url("http://8.8.8.8/test")
+
+    def test_blocks_non_http_scheme(self):
+        import server as srv
+        with pytest.raises(ValueError, match="scheme"):
+            srv._validate_http_url("ftp://example.com/file")
+
+    def test_blocks_no_hostname(self):
+        import server as srv
+        with pytest.raises(ValueError, match="hostname"):
+            srv._validate_http_url("http:///path")

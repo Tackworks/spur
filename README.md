@@ -10,7 +10,9 @@ Spur sits between your agent system and the outside world. When something happen
 
 No SDK. No message broker. No YAML config files. One Python file, SQLite event log, configure routes via API or web UI.
 
-**Status: alpha.** Developed and tested internally on sandboxed development machines. If you deploy this: inspect the code, run in a VM or isolated environment, and back up your data before upgrading. This has not been independently security audited.
+**Status: alpha.** Developed and tested internally on sandboxed development machines. If you deploy this: inspect the code, run in a VM or isolated environment, and back up your data before upgrading. This has not been independently security audited. See [SECURITY.md](SECURITY.md) for details.
+
+**Auth note:** If you set `SPUR_API_KEY`, the server will require the key for all write operations via the API. However, the web UI does not currently send the API key with its requests. This means creating routes, deleting routes, and testing routes from the UI will be rejected by the server when a key is set. API clients (which include the key in headers) will work correctly. Web UI auth support is planned.
 
 ## Quick Start
 
@@ -124,6 +126,11 @@ Leave the template empty for sensible auto-formatting.
 | `SPUR_PORT` | `8797` | Port number |
 | `SPUR_DB` | `./data/spur.db` | SQLite database path |
 | `SPUR_API_KEY` | (none) | Optional API key for write operations (reads remain open) |
+
+## Known Limitations
+
+- **Web UI does not support API key auth.** If `SPUR_API_KEY` is set, the web UI cannot perform write operations (create/edit/delete routes, test routes, replay events). API clients that send the key in headers work fine. Fix planned for next release.
+- **No built-in HTTPS or rate limiting.** Use a reverse proxy for production deployments. See [SECURITY.md](SECURITY.md).
 
 ## Dependencies
 

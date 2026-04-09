@@ -8,7 +8,8 @@ Tackworks projects (Tack, Chock, Spur) are **self-hosted tools designed to run o
 
 The following are **intentional design decisions**, not vulnerabilities:
 
-- **No built-in authentication.** These tools assume a trusted network. Use a reverse proxy (Caddy, nginx, Traefik) or a VPN (Tailscale, WireGuard) to control access.
+- **Optional API key auth only.** Spur supports a shared API key (`SPUR_API_KEY` env var) that protects write operations. Reads remain open. This is a basic guard, not a full auth system. For production deployments, use a reverse proxy (Caddy, nginx, Traefik) or a VPN (Tailscale, WireGuard) to control access.
+- **Web UI does not send the API key.** When `SPUR_API_KEY` is set, the web UI's write operations (create/edit/delete routes, test, replay) will fail with 401 errors because the frontend JavaScript does not include the key in request headers. This is a known gap, not a design decision. API clients that include the key work correctly. A fix is planned.
 - **No built-in HTTPS.** Same reason. Terminate TLS at your reverse proxy.
 - **No rate limiting.** Handled at the infrastructure layer, not the application layer.
 
